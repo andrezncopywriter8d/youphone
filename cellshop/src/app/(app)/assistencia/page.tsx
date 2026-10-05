@@ -30,7 +30,7 @@ export default async function AssistancePage({ searchParams }: { searchParams: P
         }
       : {}),
   };
-  const [orders, counts, partsLow, finance] = await Promise.all([
+  const [orders, counts, partsLow, finance, late, warrantyReturns] = await Promise.all([
     prisma.serviceOrder.findMany({
       where,
       take: 120,
@@ -40,10 +40,10 @@ export default async function AssistancePage({ searchParams }: { searchParams: P
     prisma.serviceOrder.groupBy({ by: ["status"], _count: true }),
     prisma.part.count({ where: { active: true, quantity: { lte: 3 } } }),
     prisma.serviceOrder.aggregate({ _sum: { totalCharged: true, totalCost: true }, where: { status: { not: "CANCELED" } } }),
+    prisma.serviceOrder.count({ where: { status: { notIn: ["DELIVERED", "CANCELED"] }, expectedAt: { lt: today } } }),
+    prisma.serviceOrder.count({ where: { warrantySourceId: { not: null } } }),
   ]);
   const count = (value: ServiceOrderStatus) => counts.find((item) => item.status === value)?._count ?? 0;
-  const late = await prisma.serviceOrder.count({ where: { status: { notIn: ["DELIVERED", "CANCELED"] }, expectedAt: { lt: today } } });
-  const warrantyReturns = await prisma.serviceOrder.count({ where: { warrantySourceId: { not: null } } });
   const ready = orders.filter((order) => order.status === "READY_FOR_PICKUP");
   const openStatuses: ServiceOrderStatus[] = ["ENTRY", "WAITING_DIAGNOSIS", "WAITING_APPROVAL", "WAITING_PART", "IN_REPAIR", "IN_TESTING", "READY_FOR_PICKUP"];
   const indicators = [

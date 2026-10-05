@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BarChart3, Boxes, LayoutDashboard, LogOut, ReceiptText, ShoppingCart, Users, Wrench } from "lucide-react";
+import { startTransition, useOptimistic } from "react";
 import type { SessionUser } from "@/lib/auth";
 import { logoutAction } from "@/app/actions";
 import { Logo } from "@/components/logo";
@@ -19,11 +20,13 @@ const nav = [
 
 export function Sidebar({ user }: { user: SessionUser }) {
   const pathname = usePathname();
+  const [optimisticPath, setOptimisticPath] = useOptimistic(pathname);
   const isActive = (href: string) => {
-    if (href === "/") return pathname === "/";
-    if (href === "/vendas") return pathname === "/vendas";
-    if (href === "/vendas/nova") return pathname === "/vendas/nova";
-    return pathname === href || pathname.startsWith(`${href}/`);
+    const currentPath = optimisticPath;
+    if (href === "/") return currentPath === "/";
+    if (href === "/vendas") return currentPath === "/vendas";
+    if (href === "/vendas/nova") return currentPath === "/vendas/nova";
+    return currentPath === href || currentPath.startsWith(`${href}/`);
   };
 
   return (
@@ -40,6 +43,8 @@ export function Sidebar({ user }: { user: SessionUser }) {
             <Link
               key={item.href}
               href={item.href}
+              prefetch
+              onClick={() => startTransition(() => setOptimisticPath(item.href))}
               className={`sidebar-nav-item group flex min-h-[56px] w-full items-center gap-3 rounded-[18px] px-3 py-3 text-[14px] font-semibold leading-none ${
                 active
                   ? "is-active bg-[#eef2ff] text-[#465fda] shadow-[inset_0_0_0_1px_#e1e7ff]"
