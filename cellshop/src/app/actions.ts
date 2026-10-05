@@ -1,7 +1,7 @@
 "use server";
 
 import { compare } from "bcryptjs";
-import { Prisma, type PaymentMethod, Role } from "@prisma/client";
+import { Prisma, type ChecklistPhase, type ChecklistResult, type PaymentMethod, Role, type ServiceOrderStatus } from "@prisma/client";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -10,6 +10,7 @@ import { createSession, destroySession, requireUser } from "@/lib/auth";
 import { digits, money } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, clearRateLimit, recordRateLimitFailure } from "@/lib/rate-limit";
+import { checklistItems } from "@/lib/service";
 
 const loginLimit = { limit: 5, lockMs: 15 * 60 * 1000, windowMs: 15 * 60 * 1000 };
 
@@ -210,4 +211,410 @@ export async function cancelSaleAction(formData: FormData) {
   revalidatePath("/vendas");
   revalidatePath("/estoque");
   redirect("/vendas?ok=Venda cancelada e estoque estornado");
+}
+
+async function nextServiceOrderNumber(tx: Prisma.TransactionClient) {
+  const count = await tx.serviceOrder.count();
+  return `OS #${String(count + 1).padStart(6, "0")}`;
+}
+
+function text(formData: FormData, key: string) {
+  return String(formData.get(key) ?? "").trim();
+}
+
+function optionalText(formData: FormData, key: string) {
+  return text(formData, key) || null;
+}
+
+function optionalDate(formData: FormData, key: string) {
+  const value = text(formData, key);
+  return value ? new Date(`${value}T12:00:00`) : null;
+}
+
+export async function createTechnicianAction(formData: FormData) {
+  const user = await requireUser();
+  const name = text(formData, "name");
+  if (name.length < 2) redirect("/assistencia?erro=Informe o nome do técnico");
+  const technician = await prisma.technician.create({
+    data: { name, phone: optionalText(formData, "phone"), email: optionalText(formData, "email") },
+  });
+  await prisma.auditLog.create({ data: { userId: user.id, action: "CREATE", entityType: "Technician", entityId: technician.id } });
+  revalidatePath("/assistencia");
+  redirect("/assistencia?ok=Técnico cadastrado");
+}
+
+export async function createServiceOrderAction(formData: FormData) {
+  const user = await requireUser();
+  const model = text(formData, "model");
+  const issueList = formData.getAll("reportedIssues").map(String).filter(Boolean);
+  if (!model || issueList.length === 0) redirect("/assistencia/nova?erro=Informe aparelho e defeito relatado");
+
+  const created = await prisma.$transaction(async (tx) => {
+    let customerId = text(formData, "customerId");
+    if (!customerId) {
+      const name = text(formData, "customerName");
+      const phone = digits(formData.get("customerPhone"));
+      const cpf = digits(formData.get("customerCpf")) || null;
+      if (name.length < 2 || phone.length < 8) throw new Error("Informe cliente ou cadastre nome e telefone.");
+      const customer = await tx.customer.upsert({
+        where: cpf ? { cpf } : { id: `missing-${crypto.randomUUID()}` },
+        update: { name, phone, email: optionalText(formData, "customerEmail") },
+        create: { name, phone, cpf, email: optionalText(formData, "customerEmail") },
+      }).catch(async () => tx.customer.create({ data: { name, phone, cpf, email: optionalText(formData, "customerEmail") } }));
+      customerId = customer.id;
+    }
+
+    const order = await tx.serviceOrder.create({
+      data: {
+        number: await nextServiceOrderNumber(tx),
+        publicToken: crypto.randomUUID().replace(/-/g, ""),
+        customerId,
+        createdById: user.id,
+        technicianId: optionalText(formData, "technicianId"),
+        status: "ENTRY",
+        priority: text(formData, "priority") === "URGENT" ? "URGENT" : "NORMAL",
+        category: text(formData, "category") || "Smartphone",
+        brand: text(formData, "brand") || "Apple",
+        model,
+        color: optionalText(formData, "color"),
+        capacity: optionalText(formData, "capacity"),
+        imei: digits(formData.get("imei")) || null,
+        imei2: digits(formData.get("imei2")) || null,
+        serial: optionalText(formData, "serial")?.toUpperCase(),
+        modelNumber: optionalText(formData, "modelNumber"),
+        unlockPassword: optionalText(formData, "unlockPassword"),
+        accessories: optionalText(formData, "accessories"),
+        deviceNotes: optionalText(formData, "deviceNotes"),
+        reportedIssues: issueList,
+        customerDescription: optionalText(formData, "customerDescription"),
+        internalNote: optionalText(formData, "internalNote"),
+        expectedAt: optionalDate(formData, "expectedAt"),
+        checklistItems: {
+          create: checklistItems.map((item) => ({ phase: "ENTRY", item, result: "NOT_TESTED" })),
+        },
+      },
+    });
+    await tx.serviceOrderHistory.create({
+      data: { serviceOrderId: order.id, userId: user.id, action: "OS criada", newStatus: "ENTRY", notes: "Abertura rápida de assistência" },
+    });
+    await tx.auditLog.create({
+      data: { userId: user.id, action: "CREATE", entityType: "ServiceOrder", entityId: order.id, metadata: { number: order.number } },
+    });
+    return order;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+  revalidatePath("/assistencia");
+  redirect(`/assistencia/${created.id}?ok=OS criada`);
+}
+
+export async function updateServiceOrderStatusAction(serviceOrderId: string, status: ServiceOrderStatus) {
+  const user = await requireUser();
+  try {
+    await prisma.$transaction(async (tx) => {
+      const current = await tx.serviceOrder.findUnique({ where: { id: serviceOrderId }, select: { status: true } });
+      if (!current) throw new Error("OS não encontrada.");
+      if (current.status === status) return;
+      await tx.serviceOrder.update({
+        where: { id: serviceOrderId },
+        data: {
+          status,
+          readyAt: status === "READY_FOR_PICKUP" ? new Date() : undefined,
+          deliveredAt: status === "DELIVERED" ? new Date() : undefined,
+          canceledAt: status === "CANCELED" ? new Date() : undefined,
+        },
+      });
+      await tx.serviceOrderHistory.create({
+        data: { serviceOrderId, userId: user.id, action: "Status alterado", previousStatus: current.status, newStatus: status },
+      });
+      await tx.auditLog.create({
+        data: { userId: user.id, action: "STATUS_CHANGE", entityType: "ServiceOrder", entityId: serviceOrderId, metadata: { from: current.status, to: status } },
+      });
+    });
+    revalidatePath("/assistencia");
+    revalidatePath(`/assistencia/${serviceOrderId}`);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Falha ao alterar status" };
+  }
+}
+
+export async function changeServiceOrderStatusFormAction(formData: FormData) {
+  const serviceOrderId = text(formData, "serviceOrderId");
+  const status = text(formData, "status") as ServiceOrderStatus;
+  const result = await updateServiceOrderStatusAction(serviceOrderId, status);
+  if (!result.ok) redirect(`/assistencia/${serviceOrderId}?erro=${encodeURIComponent(result.error ?? "Falha ao alterar status")}`);
+  redirect(`/assistencia/${serviceOrderId}?ok=Status atualizado`);
+}
+
+export async function assignServiceTechnicianAction(formData: FormData) {
+  const user = await requireUser();
+  const serviceOrderId = text(formData, "serviceOrderId");
+  const technicianId = optionalText(formData, "technicianId");
+  await prisma.$transaction([
+    prisma.serviceOrder.update({ where: { id: serviceOrderId }, data: { technicianId } }),
+    prisma.serviceOrderHistory.create({ data: { serviceOrderId, userId: user.id, action: "Técnico atribuído", notes: technicianId ?? "Sem técnico" } }),
+    prisma.auditLog.create({ data: { userId: user.id, action: "ASSIGN_TECHNICIAN", entityType: "ServiceOrder", entityId: serviceOrderId, metadata: { technicianId } } }),
+  ]);
+  revalidatePath(`/assistencia/${serviceOrderId}`);
+  redirect(`/assistencia/${serviceOrderId}?ok=Técnico atualizado`);
+}
+
+export async function saveChecklistAction(formData: FormData) {
+  const user = await requireUser();
+  const serviceOrderId = text(formData, "serviceOrderId");
+  const phase = text(formData, "phase") as ChecklistPhase;
+  await prisma.$transaction(async (tx) => {
+    for (const item of checklistItems) {
+      const result = text(formData, `result:${item}`) as ChecklistResult || "NOT_TESTED";
+      const notes = optionalText(formData, `notes:${item}`);
+      await tx.serviceChecklistItem.upsert({
+        where: { serviceOrderId_phase_item: { serviceOrderId, phase, item } },
+        update: { result, notes },
+        create: { serviceOrderId, phase, item, result, notes },
+      });
+    }
+    await tx.serviceOrderHistory.create({ data: { serviceOrderId, userId: user.id, action: phase === "ENTRY" ? "Checklist de entrada salvo" : "Teste final salvo" } });
+    await tx.auditLog.create({ data: { userId: user.id, action: "SAVE_CHECKLIST", entityType: "ServiceOrder", entityId: serviceOrderId, metadata: { phase } } });
+  });
+  revalidatePath(`/assistencia/${serviceOrderId}`);
+  redirect(`/assistencia/${serviceOrderId}?ok=Checklist salvo`);
+}
+
+export async function saveDiagnosticAction(formData: FormData) {
+  const user = await requireUser();
+  const serviceOrderId = text(formData, "serviceOrderId");
+  const foundIssue = text(formData, "foundIssue");
+  if (foundIssue.length < 3) redirect(`/assistencia/${serviceOrderId}?erro=Informe o defeito encontrado`);
+  await prisma.$transaction(async (tx) => {
+    await tx.serviceDiagnostic.upsert({
+      where: { serviceOrderId },
+      update: {
+        technicianId: optionalText(formData, "technicianId"),
+        diagnosedById: user.id,
+        foundIssue,
+        probableCause: optionalText(formData, "probableCause"),
+        recommendedService: optionalText(formData, "recommendedService"),
+        technicalNote: optionalText(formData, "technicalNote"),
+        estimatedTime: optionalText(formData, "estimatedTime"),
+      },
+      create: {
+        serviceOrderId,
+        technicianId: optionalText(formData, "technicianId"),
+        diagnosedById: user.id,
+        foundIssue,
+        probableCause: optionalText(formData, "probableCause"),
+        recommendedService: optionalText(formData, "recommendedService"),
+        technicalNote: optionalText(formData, "technicalNote"),
+        estimatedTime: optionalText(formData, "estimatedTime"),
+      },
+    });
+    await tx.serviceOrderHistory.create({ data: { serviceOrderId, userId: user.id, action: "Diagnóstico salvo" } });
+    await tx.auditLog.create({ data: { userId: user.id, action: "SAVE_DIAGNOSTIC", entityType: "ServiceOrder", entityId: serviceOrderId } });
+  });
+  revalidatePath(`/assistencia/${serviceOrderId}`);
+  redirect(`/assistencia/${serviceOrderId}?ok=Diagnóstico salvo`);
+}
+
+export async function saveQuoteAction(formData: FormData) {
+  const user = await requireUser();
+  const serviceOrderId = text(formData, "serviceOrderId");
+  const descriptions = formData.getAll("description").map(String);
+  const types = formData.getAll("type").map(String);
+  const quantities = formData.getAll("quantity").map((v) => Number(v) || 1);
+  const costs = formData.getAll("cost").map(money);
+  const prices = formData.getAll("price").map(money);
+  const discount = money(formData.get("discount"));
+  const items = descriptions.map((description, index) => ({
+    description: description.trim(),
+    type: types[index] === "PART" ? "PART" as const : "SERVICE" as const,
+    quantity: Math.max(1, quantities[index] ?? 1),
+    cost: costs[index] ?? 0,
+    price: prices[index] ?? 0,
+  })).filter((item) => item.description && item.price > 0);
+  if (items.length === 0) redirect(`/assistencia/${serviceOrderId}?erro=Adicione ao menos um item ao orçamento`);
+  const subtotalParts = items.filter((item) => item.type === "PART").reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const subtotalServices = items.filter((item) => item.type === "SERVICE").reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const totalCost = items.reduce((sum, item) => sum + item.cost * item.quantity, 0);
+  const total = Math.max(0, subtotalParts + subtotalServices - discount);
+  const profit = total - totalCost;
+  const margin = total > 0 ? (profit / total) * 100 : 0;
+  await prisma.$transaction(async (tx) => {
+    const existing = await tx.serviceQuote.findUnique({ where: { serviceOrderId } });
+    if (existing) {
+      await tx.serviceQuoteItem.deleteMany({ where: { quoteId: existing.id } });
+      await tx.serviceQuote.update({
+        where: { id: existing.id },
+        data: {
+          subtotalParts,
+          subtotalServices,
+          discount,
+          total,
+          totalCost,
+          profit,
+          margin,
+          responsibleId: user.id,
+          items: { create: items },
+        },
+      });
+    } else {
+      await tx.serviceQuote.create({
+        data: {
+          serviceOrderId,
+          subtotalParts,
+          subtotalServices,
+          discount,
+          total,
+          totalCost,
+          profit,
+          margin,
+          responsibleId: user.id,
+          items: { create: items },
+        },
+      });
+    }
+    await tx.serviceOrder.update({
+      where: { id: serviceOrderId },
+      data: { totalParts: subtotalParts, totalServices: subtotalServices, discountTotal: discount, totalCharged: total, totalCost },
+    });
+    await tx.serviceOrderHistory.create({ data: { serviceOrderId, userId: user.id, action: `Orçamento de R$ ${total.toFixed(2)} salvo` } });
+    await tx.auditLog.create({ data: { userId: user.id, action: "SAVE_QUOTE", entityType: "ServiceOrder", entityId: serviceOrderId, metadata: { total } } });
+  });
+  revalidatePath(`/assistencia/${serviceOrderId}`);
+  redirect(`/assistencia/${serviceOrderId}?ok=Orçamento salvo`);
+}
+
+export async function updateQuoteStatusAction(formData: FormData) {
+  const user = await requireUser();
+  const serviceOrderId = text(formData, "serviceOrderId");
+  const status = text(formData, "status");
+  const now = new Date();
+  await prisma.$transaction(async (tx) => {
+    await tx.serviceQuote.update({
+      where: { serviceOrderId },
+      data: {
+        status: status as never,
+        sentAt: status === "SENT" ? now : undefined,
+        approvedAt: status === "APPROVED" ? now : undefined,
+        approvalMethod: status === "APPROVED" ? text(formData, "approvalMethod") || "Manual" : undefined,
+        responsibleId: user.id,
+      },
+    });
+    if (status === "APPROVED") {
+      await tx.serviceOrder.update({ where: { id: serviceOrderId }, data: { status: "WAITING_PART" } });
+    }
+    await tx.serviceOrderHistory.create({ data: { serviceOrderId, userId: user.id, action: `Orçamento ${status}` } });
+  });
+  revalidatePath(`/assistencia/${serviceOrderId}`);
+  redirect(`/assistencia/${serviceOrderId}?ok=Status do orçamento atualizado`);
+}
+
+export async function createPartAction(formData: FormData) {
+  const user = await requireUser();
+  const sku = text(formData, "sku");
+  const name = text(formData, "name");
+  const quantity = Number(formData.get("quantity")) || 0;
+  if (!sku || !name) redirect("/assistencia/pecas?erro=Informe SKU e nome da peça");
+  await prisma.$transaction(async (tx) => {
+    const part = await tx.part.create({
+      data: {
+        sku,
+        barcode: optionalText(formData, "barcode"),
+        name,
+        category: text(formData, "category") || "Peça",
+        brand: optionalText(formData, "brand"),
+        compatibleModel: optionalText(formData, "compatibleModel"),
+        quality: optionalText(formData, "quality"),
+        supplier: optionalText(formData, "supplier"),
+        cost: money(formData.get("cost")),
+        price: money(formData.get("price")),
+        quantity,
+        minimumStock: Number(formData.get("minimumStock")) || 0,
+        location: optionalText(formData, "location"),
+      },
+    });
+    const models = text(formData, "compatibilities").split(",").map((model) => model.trim()).filter(Boolean);
+    if (models.length) await tx.partCompatibility.createMany({ data: models.map((model) => ({ partId: part.id, model })), skipDuplicates: true });
+    if (quantity > 0) await tx.partMovement.create({ data: { partId: part.id, type: "ENTRY", quantity, reason: "Cadastro inicial", userId: user.id } });
+    await tx.auditLog.create({ data: { userId: user.id, action: "CREATE", entityType: "Part", entityId: part.id } });
+  });
+  revalidatePath("/assistencia/pecas");
+  redirect("/assistencia/pecas?ok=Peça cadastrada");
+}
+
+export async function addServiceOrderPartAction(formData: FormData) {
+  const user = await requireUser();
+  const serviceOrderId = text(formData, "serviceOrderId");
+  const partId = text(formData, "partId");
+  const quantity = Math.max(1, Number(formData.get("quantity")) || 1);
+  const mode = text(formData, "mode");
+  await prisma.$transaction(async (tx) => {
+    const part = await tx.part.findUnique({ where: { id: partId } });
+    if (!part) throw new Error("Peça não encontrada.");
+    const available = part.quantity - part.reserved;
+    if (mode === "RESERVE" && available < quantity) throw new Error("Estoque disponível insuficiente para reservar.");
+    if (mode === "USE" && part.quantity < quantity) throw new Error("Estoque físico insuficiente para consumir.");
+    if (mode === "RESERVE") {
+      await tx.part.update({ where: { id: partId }, data: { reserved: { increment: quantity } } });
+      await tx.serviceOrderPart.create({ data: { serviceOrderId, partId, quantity, unitCost: part.cost, unitPrice: part.price, status: "RESERVED" } });
+      await tx.partMovement.create({ data: { partId, serviceOrderId, type: "RESERVE", quantity, reason: "Reserva para OS", userId: user.id } });
+    } else {
+      await tx.part.update({ where: { id: partId }, data: { quantity: { decrement: quantity }, reserved: { decrement: Math.min(Number(part.reserved), quantity) } } });
+      await tx.serviceOrderPart.create({ data: { serviceOrderId, partId, quantity, unitCost: part.cost, unitPrice: part.price, status: "USED" } });
+      await tx.partMovement.create({ data: { partId, serviceOrderId, type: "CONSUME_IN_SERVICE_ORDER", quantity, reason: "Consumo em OS", userId: user.id } });
+    }
+    await tx.serviceOrderHistory.create({ data: { serviceOrderId, userId: user.id, action: mode === "RESERVE" ? "Peça reservada" : "Peça consumida", notes: `${quantity}x ${part.name}` } });
+    await tx.auditLog.create({ data: { userId: user.id, action: mode === "RESERVE" ? "RESERVE_PART" : "CONSUME_PART", entityType: "ServiceOrder", entityId: serviceOrderId, metadata: { partId, quantity } } });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  revalidatePath(`/assistencia/${serviceOrderId}`);
+  revalidatePath("/assistencia/pecas");
+  redirect(`/assistencia/${serviceOrderId}?ok=Peça atualizada na OS`);
+}
+
+export async function recordServicePaymentAction(formData: FormData) {
+  const user = await requireUser();
+  const serviceOrderId = text(formData, "serviceOrderId");
+  const amount = money(formData.get("amount"));
+  const method = text(formData, "method") as PaymentMethod;
+  if (amount <= 0) redirect(`/assistencia/${serviceOrderId}?erro=Informe um valor de pagamento`);
+  await prisma.$transaction(async (tx) => {
+    const order = await tx.serviceOrder.findUnique({ where: { id: serviceOrderId }, include: { payments: true } });
+    if (!order) throw new Error("OS não encontrada.");
+    const paid = order.payments.reduce((sum, payment) => sum + Number(payment.amount), 0) + amount;
+    const total = Number(order.totalCharged);
+    await tx.serviceOrderPayment.create({ data: { serviceOrderId, amount, method, userId: user.id, notes: optionalText(formData, "notes") } });
+    await tx.serviceOrder.update({ where: { id: serviceOrderId }, data: { paymentStatus: paid >= total && total > 0 ? "PAID" : paid > 0 ? "PARTIAL" : "UNPAID" } });
+    await tx.financialTransaction.create({ data: { type: "INCOME", description: `Pagamento ${order.number}`, amount } });
+    await tx.serviceOrderHistory.create({ data: { serviceOrderId, userId: user.id, action: `Pagamento registrado: R$ ${amount.toFixed(2)}` } });
+  });
+  revalidatePath(`/assistencia/${serviceOrderId}`);
+  revalidatePath("/financeiro");
+  redirect(`/assistencia/${serviceOrderId}?ok=Pagamento registrado`);
+}
+
+export async function deliverServiceOrderAction(formData: FormData) {
+  const user = await requireUser();
+  const serviceOrderId = text(formData, "serviceOrderId");
+  await prisma.$transaction(async (tx) => {
+    await tx.serviceOrder.update({ where: { id: serviceOrderId }, data: { status: "DELIVERED", deliveredAt: new Date(), deliveredBy: user.name, pickedUpBy: text(formData, "pickedUpBy") || "Cliente" } });
+    await tx.serviceOrderHistory.create({ data: { serviceOrderId, userId: user.id, action: "Aparelho entregue", newStatus: "DELIVERED" } });
+    await tx.auditLog.create({ data: { userId: user.id, action: "DELIVER", entityType: "ServiceOrder", entityId: serviceOrderId } });
+  });
+  revalidatePath(`/assistencia/${serviceOrderId}`);
+  redirect(`/assistencia/${serviceOrderId}?ok=Aparelho entregue`);
+}
+
+export async function createWarrantyAction(formData: FormData) {
+  const user = await requireUser();
+  const serviceOrderId = text(formData, "serviceOrderId");
+  const days = Number(formData.get("warrantyDays")) || 90;
+  const start = new Date();
+  const end = new Date(start);
+  end.setDate(start.getDate() + days);
+  await prisma.$transaction([
+    prisma.serviceOrder.update({ where: { id: serviceOrderId }, data: { warrantyDays: days, warrantyStartAt: start, warrantyEndAt: end, warrantyNotes: optionalText(formData, "warrantyNotes") } }),
+    prisma.serviceOrderHistory.create({ data: { serviceOrderId, userId: user.id, action: `Garantia gerada por ${days} dias` } }),
+    prisma.auditLog.create({ data: { userId: user.id, action: "CREATE_WARRANTY", entityType: "ServiceOrder", entityId: serviceOrderId, metadata: { days } } }),
+  ]);
+  revalidatePath(`/assistencia/${serviceOrderId}`);
+  redirect(`/assistencia/${serviceOrderId}?ok=Garantia gerada`);
 }

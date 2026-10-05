@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertCircle, ArrowRight, Boxes, CircleDollarSign, CreditCard, PackagePlus, QrCode, ReceiptText, ShoppingCart, Smartphone, Users, WalletCards } from "lucide-react";
+import { AlertCircle, ArrowRight, Boxes, CircleDollarSign, CreditCard, PackagePlus, QrCode, ReceiptText, ShoppingCart, Smartphone, Users, WalletCards, Wrench } from "lucide-react";
 import { SalesChart } from "@/components/sales-chart";
 import { brl, dateTime } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -22,6 +22,7 @@ export default async function DashboardPage(){
     {href:"/estoque",label:"Estoque",detail:"Consultar unidades",icon:Boxes,color:"#5977f4",bg:"#eef2ff"},
     {href:"/clientes",label:"Clientes",detail:"Base de contatos",icon:Users,color:"#8b6df3",bg:"#f4f0ff"},
     {href:"/vendas/nova",label:"Nova venda",detail:"Abrir o PDV",icon:ShoppingCart,color:"#19ae73",bg:"#eaf9f2"},
+    {href:"/assistencia",label:"Assistência",detail:"OS e reparos",icon:Wrench,color:"#5977f4",bg:"#eef2ff"},
     {href:"/estoque/novo",label:"Novo aparelho",detail:"Entrada por IMEI",icon:PackagePlus,color:"#e8862d",bg:"#fff5ea"},
     {href:"/vendas",label:"Histórico",detail:"Vendas e estornos",icon:ReceiptText,color:"#ec6172",bg:"#fff0f3"},
     {href:"/financeiro",label:"Financeiro",detail:"Entradas e saldo",icon:WalletCards,color:"#6d5bd0",bg:"#f2efff"},

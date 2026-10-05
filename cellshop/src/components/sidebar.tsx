@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Boxes, LayoutDashboard, LogOut, ReceiptText, ShoppingCart, Users } from "lucide-react";
+import { BarChart3, Boxes, LayoutDashboard, LogOut, ReceiptText, ShoppingCart, Users, Wrench } from "lucide-react";
 import type { SessionUser } from "@/lib/auth";
 import { logoutAction } from "@/app/actions";
 import { Logo } from "@/components/logo";
@@ -11,6 +11,7 @@ const nav = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/vendas/nova", label: "Nova venda", icon: ShoppingCart },
   { href: "/estoque", label: "Estoque", icon: Boxes },
+  { href: "/assistencia", label: "Assistência", icon: Wrench },
   { href: "/clientes", label: "Clientes", icon: Users },
   { href: "/vendas", label: "Histórico", icon: ReceiptText },
   { href: "/financeiro", label: "Financeiro", icon: BarChart3 },
