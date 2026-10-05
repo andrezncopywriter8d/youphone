@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowLeft, ScanLine, ShieldCheck, Smartphone, UserPlus } from "lucide-react";
+import { ArrowLeft, Plus, ScanLine, ShieldCheck, Smartphone, UserPlus } from "lucide-react";
 import { createServiceOrderAction } from "@/app/actions";
 import { Flash } from "@/components/flash";
 import { prisma } from "@/lib/prisma";
@@ -34,12 +34,17 @@ export default async function NewServiceOrderPage({ searchParams }: { searchPara
             <div className="grid gap-4 md:grid-cols-2">
               <div className="md:col-span-2">
                 <label className="label">Cliente existente</label>
-                <select className="input" name="customerId" defaultValue="">
-                  <option value="">Criar novo cliente abaixo</option>
-                  {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name} · {customer.phone} {customer.cpf ? `· ${customer.cpf}` : ""}</option>)}
-                </select>
+                <div className="grid grid-cols-[1fr_56px] gap-2">
+                  <select className="input" name="customerId" defaultValue="">
+                    <option value="">Criar novo cliente abaixo</option>
+                    {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name} · {customer.phone} {customer.cpf ? `· ${customer.cpf}` : ""}</option>)}
+                  </select>
+                  <a href="#novo-cliente" aria-label="Cadastrar novo cliente" title="Cadastrar novo cliente" className="grid min-h-12 place-items-center rounded-[13px] border border-[#ccebd9] bg-[#f0fbf5] text-[#008f31] shadow-[0_2px_7px_rgba(20,130,70,.04)] transition hover:border-[#a8dfbe] hover:bg-[#e7f8ee] hover:text-[#007a2a] focus:outline-none focus:ring-4 focus:ring-[#20b978]/15">
+                    <Plus size={23} strokeWidth={3} />
+                  </a>
+                </div>
               </div>
-              <div><label className="label">Nome do novo cliente</label><input className="input" name="customerName" placeholder="Nome completo" /></div>
+              <div id="novo-cliente" className="scroll-mt-28"><label className="label">Nome do novo cliente</label><input className="input" name="customerName" placeholder="Nome completo" /></div>
               <div><label className="label">Telefone</label><input className="input" name="customerPhone" inputMode="tel" placeholder="(85) 99999-9999" /></div>
               <div><label className="label">CPF</label><input className="input" name="customerCpf" inputMode="numeric" /></div>
               <div><label className="label">E-mail</label><input className="input" name="customerEmail" type="email" /></div>
