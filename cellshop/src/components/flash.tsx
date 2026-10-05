@@ -1,0 +1,1 @@
+export function Flash({ok,error}:{ok?:string;error?:string}){if(!ok&&!error)return null;return <div className={`mb-5 rounded-xl border px-4 py-3 text-sm ${error?"border-red-500/20 bg-red-500/10 text-red-300":"border-emerald-500/20 bg-emerald-500/10 text-emerald-300"}`}>{error??ok}</div>}

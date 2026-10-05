@@ -1,0 +1,4 @@
+import { Pos } from "@/components/pos";
+import { prisma } from "@/lib/prisma";
+export const dynamic="force-dynamic";
+export default async function NewSalePage(){const[rows,customers]=await Promise.all([prisma.inventoryUnit.findMany({where:{status:"AVAILABLE",deletedAt:null},include:{productVariant:true},orderBy:{createdAt:"desc"}}),prisma.customer.findMany({orderBy:{name:"asc"}})]);const units=rows.map(u=>({id:u.id,internalCode:u.internalCode,imei1:u.imei1,model:u.productVariant.model,storage:u.productVariant.storage,color:u.productVariant.color,price:Number(u.salePrice)}));return <><div className="mb-7"><p className="text-sm font-semibold text-orange-400">PDV</p><h1 className="page-title mt-1">Nova venda</h1><p className="page-subtitle">Localize, adicione e finalize em poucos passos.</p></div><Pos units={units} customers={customers.map(c=>({id:c.id,name:c.name,phone:c.phone}))}/></>}

@@ -1,0 +1,227 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  SELLER
+}
+
+enum InventoryStatus {
+  AVAILABLE
+  RESERVED
+  SOLD
+  SERVICE
+  DEFECTIVE
+  RETURNED
+  TRADE_IN_PROCESS
+  INACTIVE
+}
+
+enum DeviceCondition {
+  NEW
+  USED
+  REFURBISHED
+  TRADE_IN
+}
+
+enum MovementType {
+  MANUAL_ENTRY
+  SALE
+  SALE_CANCELED
+  ADJUSTMENT
+  RETURN
+}
+
+enum SaleStatus {
+  COMPLETED
+  CANCELED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  PIX
+  CASH
+  CREDIT_CARD
+  DEBIT_CARD
+  TRANSFER
+  TRADE_IN
+}
+
+enum FinancialType {
+  INCOME
+  REVERSAL
+  EXPENSE
+}
+
+model User {
+  id            String              @id @default(cuid())
+  name          String
+  email         String              @unique
+  passwordHash  String
+  role          Role                @default(SELLER)
+  active        Boolean             @default(true)
+  createdAt     DateTime            @default(now())
+  movements     InventoryMovement[]
+  sales         Sale[]              @relation("CreatedSales")
+  canceledSales Sale[]              @relation("CanceledSales")
+  auditLogs     AuditLog[]
+}
+
+model Customer {
+  id        String   @id @default(cuid())
+  name      String
+  phone     String
+  cpf       String?  @unique
+  email     String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sales     Sale[]
+
+  @@index([name])
+  @@index([phone])
+}
+
+model ProductVariant {
+  id        String          @id @default(cuid())
+  brand     String          @default("Apple")
+  model     String
+  storage   String
+  color     String
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  units     InventoryUnit[]
+
+  @@unique([brand, model, storage, color])
+  @@index([model])
+}
+
+model InventoryUnit {
+  id               String              @id @default(cuid())
+  productVariantId String
+  internalCode     String              @unique
+  imei1            String              @unique
+  imei2            String?             @unique
+  serialNumber     String?             @unique
+  condition        DeviceCondition
+  batteryHealth    Int?
+  hasBox           Boolean             @default(false)
+  purchaseCost     Decimal             @db.Decimal(12, 2)
+  salePrice        Decimal             @db.Decimal(12, 2)
+  minimumSalePrice Decimal?            @db.Decimal(12, 2)
+  status           InventoryStatus     @default(AVAILABLE)
+  notes            String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  deletedAt        DateTime?
+  productVariant   ProductVariant      @relation(fields: [productVariantId], references: [id])
+  movements        InventoryMovement[]
+  saleItems        SaleItem[]
+
+  @@index([status])
+  @@index([imei1])
+  @@index([serialNumber])
+}
+
+model InventoryMovement {
+  id              String           @id @default(cuid())
+  inventoryUnitId String
+  type            MovementType
+  fromStatus      InventoryStatus?
+  toStatus        InventoryStatus
+  referenceType   String?
+  referenceId     String?
+  notes           String?
+  userId          String
+  createdAt       DateTime         @default(now())
+  inventoryUnit   InventoryUnit    @relation(fields: [inventoryUnitId], references: [id])
+  user            User             @relation(fields: [userId], references: [id])
+
+  @@index([inventoryUnitId, createdAt])
+}
+
+model Sale {
+  id            String                 @id @default(cuid())
+  number        String                 @unique
+  customerId    String?
+  status        SaleStatus             @default(COMPLETED)
+  grossTotal    Decimal                @db.Decimal(12, 2)
+  discountTotal Decimal                @default(0) @db.Decimal(12, 2)
+  netTotal      Decimal                @db.Decimal(12, 2)
+  createdById   String
+  canceledById  String?
+  canceledAt    DateTime?
+  cancelReason  String?
+  createdAt     DateTime               @default(now())
+  customer      Customer?              @relation(fields: [customerId], references: [id])
+  createdBy     User                   @relation("CreatedSales", fields: [createdById], references: [id])
+  canceledBy    User?                  @relation("CanceledSales", fields: [canceledById], references: [id])
+  items         SaleItem[]
+  payments      Payment[]
+  financial     FinancialTransaction[]
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+model SaleItem {
+  id              String        @id @default(cuid())
+  saleId          String
+  inventoryUnitId String
+  description     String
+  imeiSnapshot    String
+  costSnapshot    Decimal       @db.Decimal(12, 2)
+  unitPrice       Decimal       @db.Decimal(12, 2)
+  discount        Decimal       @default(0) @db.Decimal(12, 2)
+  finalPrice      Decimal       @db.Decimal(12, 2)
+  sale            Sale          @relation(fields: [saleId], references: [id])
+  inventoryUnit   InventoryUnit @relation(fields: [inventoryUnitId], references: [id])
+
+  @@unique([saleId, inventoryUnitId])
+}
+
+model Payment {
+  id           String        @id @default(cuid())
+  saleId       String
+  method       PaymentMethod
+  amount       Decimal       @db.Decimal(12, 2)
+  feeAmount    Decimal       @default(0) @db.Decimal(12, 2)
+  netAmount    Decimal       @db.Decimal(12, 2)
+  installments Int           @default(1)
+  createdAt    DateTime      @default(now())
+  sale         Sale          @relation(fields: [saleId], references: [id])
+}
+
+model FinancialTransaction {
+  id          String        @id @default(cuid())
+  saleId      String?
+  type        FinancialType
+  description String
+  amount      Decimal       @db.Decimal(12, 2)
+  createdAt   DateTime      @default(now())
+  sale        Sale?         @relation(fields: [saleId], references: [id])
+
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  action     String
+  entityType String
+  entityId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
