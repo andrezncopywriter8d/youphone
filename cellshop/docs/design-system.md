@@ -46,6 +46,13 @@ Princípios:
 - Espaçamento entre seções: 24 px.
 - Área de toque mínima: 44 × 44 px.
 
+## Seletores
+
+- Todo seletor novo deve seguir a base clean do sistema: branco, borda `--border-strong`, raio 13 px, altura mínima 48 px, texto Poppins 13 px/500 e foco azul com halo suave.
+- Em formulários simples de servidor, usar `select.input`, que já possui seta customizada e estados hover/focus globais.
+- Em fluxos operacionais/client-side, especialmente PDV e etapas com decisão rápida, preferir o componente `CleanSelect`, para que o menu aberto também mantenha visual moderno, item ativo, hover, descrição curta e check de seleção.
+- Evitar menus nativos grandes sem estilização em novas etapas.
+
 ## Referências aplicadas
 
 - Material Design 3: papéis semânticos de cor, pares de contraste e escala tipográfica por função.

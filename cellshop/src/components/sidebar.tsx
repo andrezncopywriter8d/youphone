@@ -19,6 +19,12 @@ const nav = [
 
 export function Sidebar({ user }: { user: SessionUser }) {
   const pathname = usePathname();
+  const isActive = (href: string) => {
+    if (href === "/") return pathname === "/";
+    if (href === "/vendas") return pathname === "/vendas";
+    if (href === "/vendas/nova") return pathname === "/vendas/nova";
+    return pathname === href || pathname.startsWith(`${href}/`);
+  };
 
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-[258px] shrink-0 flex-col border-r border-[#e8eaf1] bg-[#fbfbfd] px-4 py-5 lg:flex">
@@ -29,7 +35,7 @@ export function Sidebar({ user }: { user: SessionUser }) {
       <nav className="mt-9 flex min-h-0 flex-1 flex-col gap-1.5">
         <p className="mb-2 px-3 text-[9px] font-semibold uppercase tracking-[.18em] text-[#a0a5b4]">Navegação</p>
         {nav.map((item) => {
-          const active = item.href === "/" ? pathname === item.href : pathname.startsWith(item.href);
+          const active = isActive(item.href);
           return (
             <Link
               key={item.href}
