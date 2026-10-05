@@ -70,13 +70,18 @@ textarea.input { padding-top: 12px; }
 .sidebar-nav-item {
   position: relative;
   display: flex;
+  flex-direction: row;
   align-items: center;
+  width: 100%;
+  min-height: 56px;
   gap: 12px;
   overflow: visible;
   border-radius: 13px;
   padding: 12px;
   font-size: 13px;
   font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
   transition: color .22s ease, background .22s ease, box-shadow .22s ease, transform .22s ease;
 }
 
